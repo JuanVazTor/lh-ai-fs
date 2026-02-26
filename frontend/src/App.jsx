@@ -11,7 +11,7 @@ function App() {
     setReport(null)
 
     try {
-      const response = await fetch('http://localhost:8000/analyze', {
+      const response = await fetch('http://localhost:8002/analyze', {
         method: 'POST',
       })
 
