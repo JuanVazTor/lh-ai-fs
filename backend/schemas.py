@@ -91,7 +91,6 @@ class AgentError(BaseModel):
 class ReportMetadata(BaseModel):
     document_count: int
     agents_run: list[str] = Field(default_factory=list)
-    fallback_used: bool = False
 
 
 class VerificationReport(BaseModel):

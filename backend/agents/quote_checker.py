@@ -1,45 +1,58 @@
 from __future__ import annotations
 
+import json
+
+from llm import call_llm_json
+from pydantic import BaseModel, TypeAdapter
 from schemas import Citation, QuoteCheck
 
-from .base import Agent, confidence_label
+from .base import Agent
+
+
+class QuoteCheckResult(BaseModel):
+    quote_checks: list[QuoteCheck]
 
 
 class QuoteCheckerAgent(Agent[list[QuoteCheck]]):
     name = "QuoteCheckerAgent"
     prompt = "Check direct quotes adjacent to citations for accuracy or material overbreadth. Use could_not_verify without source text unless the quote is known to be problematic."
 
+    llm_prompt = """You are a legal quote checking agent.
+
+Given extracted citations, review only citations that include direct_quote. Assess whether the quote is accurate, materially overbroad, unsupported, or impossible to verify from the available information.
+
+Return JSON only with this shape:
+{
+  "quote_checks": [
+    {
+      "citation_id": "citation_1",
+      "quote": "quoted text",
+      "status": "supported|partially_supported|not_supported|could_not_verify|likely_fabricated",
+      "issue": "short issue or null",
+      "source_basis": "what you relied on",
+      "confidence": 0.0,
+      "confidence_label": "low|medium|high",
+      "reasoning": "concise explanation"
+    }
+  ]
+}
+
+Rules:
+- Return checks only for citations with direct_quote.
+- Do not claim exact quote verification unless primary source text is present.
+- If a quote appears materially broader than the legal rule, flag that explicitly.
+- Use could_not_verify when source text is unavailable and you lack a confident basis.
+"""
+
     def run(self, citations: list[Citation]) -> list[QuoteCheck]:
-        checks: list[QuoteCheck] = []
-        for citation in citations:
-            if not citation.has_direct_quote or not citation.direct_quote:
-                continue
-            if citation.id and "never liable" in citation.direct_quote.lower():
-                confidence = 0.78
-                checks.append(
-                    QuoteCheck(
-                        citation_id=citation.id,
-                        quote=citation.direct_quote,
-                        status="not_supported",
-                        issue="The quote states an absolute 'never liable' rule and omits recognized Privette exceptions, making it materially overbroad or inaccurate.",
-                        confidence=confidence,
-                        confidence_label=confidence_label(confidence),
-                        reasoning="The quoted language is broader than the commonly understood Privette doctrine.",
-                        source_basis="LLM-only legal knowledge; exact source text was not retrieved.",
-                    )
-                )
-            else:
-                confidence = 0.35
-                checks.append(
-                    QuoteCheck(
-                        citation_id=citation.id,
-                        quote=citation.direct_quote,
-                        status="could_not_verify",
-                        issue="Exact quote text could not be verified against the underlying authority.",
-                        confidence=confidence,
-                        confidence_label=confidence_label(confidence),
-                        reasoning="The case file does not include source authority text.",
-                        source_basis="No source authority text available.",
-                    )
-                )
-        return checks
+        quoted_citations = [citation for citation in citations if citation.has_direct_quote and citation.direct_quote]
+        if not quoted_citations:
+            return []
+        result = call_llm_json(
+            messages=[
+                {"role": "system", "content": self.llm_prompt},
+                {"role": "user", "content": json.dumps([citation.model_dump() for citation in quoted_citations])},
+            ],
+            adapter=TypeAdapter(QuoteCheckResult),
+        )
+        return result.quote_checks

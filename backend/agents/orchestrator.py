@@ -47,7 +47,6 @@ def run_analysis(documents: dict[str, str]) -> VerificationReport:
         metadata=ReportMetadata(
             document_count=len(documents),
             agents_run=agents_run,
-            fallback_used=True,
         ),
     )
 
