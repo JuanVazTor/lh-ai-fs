@@ -86,11 +86,9 @@ Every finding uses a shared status set so the eval harness can compare consisten
 
 **Output:** `list[Citation]`
 
-**Approach:** Regex-based extraction against known citation patterns in the MSJ. For each matched citation, it records the authority name, reporter citation, surrounding context, the proposition the citation supports, and any direct quote text on the same line.
+**Approach:** LLM-powered structured extraction. The agent asks the LLM to return validated JSON matching `CitationExtractionResult`. If the LLM is unavailable or returns invalid JSON, the orchestrator records an agent error rather than using a deterministic fallback.
 
-**Why regex, not LLM:** Citation extraction is a structured pattern-matching task. Regex gives deterministic, reproducible results and does not require an API key. The tradeoff is that the pattern list is specific to this case file; a production system would need a more general citation parser.
-
-**Proposition mapping:** Each recognized citation maps to a human-written proposition summarizing what the MSJ uses it to support. This keeps the authority verifier and quote checker grounded in what the brief actually argues, rather than guessing.
+**Proposition mapping:** Each recognized citation includes an LLM-extracted proposition summarizing what the MSJ uses it to support. This keeps the authority verifier and quote checker grounded in what the brief actually argues, rather than guessing.
 
 ### 2. AuthorityVerifierAgent
 
@@ -104,10 +102,7 @@ Every finding uses a shared status set so the eval harness can compare consisten
 
 **Key design decision:** The agent does not scrape legal websites or query a legal database. This was a deliberate tradeoff to avoid rate limits, paywalls, and fragility. The downside is that the agent cannot definitively confirm or deny obscure citations. It compensates by being explicit about uncertainty and by not fabricating holdings.
 
-**Confidence ranges:**
-- Known authorities with clear support or problems: 0.67-0.90
-- Obscure authorities without source text: 0.30-0.45
-- Overbreadth findings on well-known doctrine: 0.78
+**Confidence scoring:** The LLM assigns confidence and a low/medium/high label in the structured response. Prompts instruct the model to stay conservative when it lacks primary source text.
 
 ### 3. QuoteCheckerAgent
 
@@ -129,9 +124,11 @@ Every finding uses a shared status set so the eval harness can compare consisten
 
 **Output:** `list[FactClaim]`
 
-**Approach:** Searches for specific factual assertions in the MSJ using keyword matching. Each claim gets a stable ID, a category, and the surrounding context. This agent does not verify claims; it only identifies them for the consistency checker.
+**Approach:** LLM-powered structured extraction. The agent asks the LLM to extract verifiable factual claims as JSON matching `FactExtractionResult`. The pipeline intentionally does not use keyword extraction fallback, because the repository is meant to evaluate LLM behavior.
 
-**Claims extracted:**
+This agent does not verify claims; it only identifies them for the consistency checker.
+
+**Expected claim categories:**
 
 | ID | Claim |
 |---|---|
@@ -251,8 +248,7 @@ Returns:
     "agent_errors": [...],
     "metadata": {
       "document_count": 4,
-      "agents_run": ["CitationExtractorAgent", ...],
-      "fallback_used": true
+      "agents_run": ["CitationExtractorAgent", ...]
     }
   }
 }
@@ -310,12 +306,11 @@ flowchart TD
 A set of six expected findings with semantic matching:
 
 Each `ExpectedFinding` requires:
-- Flag ID match
-- Status within accepted set (e.g., `contradicted`)
-- Required terms present in finding text (e.g., "March 14" and "March 12")
+- Required semantic concepts present in finding text, with aliases for LLM wording variation
+- Status within accepted set (for example, `contradicted` or `partially_supported` for a factual conflict)
 - Confidence within min/max bounds
 
-**Precision** = matched core flags / total flags produced
+**Precision** = semantic core, weak, and aspirational matches / total flags produced
 
 **Core recall** = matched core flags / 6 expected
 
@@ -325,7 +320,7 @@ One additional expected finding that the current pipeline does **not** catch: th
 
 **Expanded recall** = (matched core + matched aspirational) / (core + aspirational count)
 
-Current result: 6/7 = 0.857. This is intentional. The eval is more informative because it measures something the pipeline misses.
+This is intentionally stricter than the core set. The eval is more informative because it measures issues the pipeline may still miss.
 
 #### 3. Negative assertions
 
@@ -338,7 +333,7 @@ If the pipeline flags any of these as contradictions, that is a false positive.
 
 #### 4. Evidence grounding
 
-For every `ConsistencyFinding` with a `source_evidence` snippet, the eval checks whether that snippet actually appears in the named source document. This is the most direct hallucination test: it verifies that the pipeline is not fabricating evidence.
+For every `ConsistencyFinding` with a `source_evidence` snippet, the eval checks whether that snippet actually appears in a named non-MSJ source document. This is the most direct hallucination test for fact consistency: it verifies that the pipeline is not using the motion's own assertions as external evidence.
 
 **Grounding rate** = grounded records / total records with evidence
 
@@ -352,56 +347,53 @@ For obscure citations (Whitmore, Kellerman, Torres), the eval checks that the pi
 
 Three document mutations that should cause specific flags to disappear:
 
-| Mutation | Expected absent flag |
+| Mutation | Expected absent semantic finding |
 |---|---|
-| Change MSJ date to March 12 | `date_discrepancy` |
-| Change MSJ PPE text to say Rivera was wearing PPE | `ppe_discrepancy` |
-| Remove Harmon direction evidence from police/witness docs | `harmon_control_disputed` |
+| Change MSJ date to March 12 | March 14 vs March 12 date conflict |
+| Change MSJ PPE text to say Rivera was wearing PPE | PPE-not-worn conflict |
+| Remove Harmon direction evidence from police/witness docs | Harmon/Apex control dispute |
 
 **Mutation pass rate** = passed scenarios / total scenarios
 
-This tests whether the pipeline is actually reading evidence or just returning hardcoded responses. Because the ConsistencyChecker inspects document content, these mutations correctly change the output.
+This tests whether the LLM is actually comparing evidence rather than repeating the same conclusions. The consistency checker receives the mutated document text, so these scenarios should change the model's output when the evidence changes.
 
-#### 7. Known limitations
+#### 7. Adversarial cases
+
+Two synthetic mini-cases test behavior outside the Rivera fixture:
+
+| Case | Purpose | Metric |
+|---|---|---|
+| Clean mini-MSJ | Facts match source documents and should not produce contradiction flags | `clean_case_false_positive_rate` |
+| Fabricated citation mini-MSJ | Contains `Imaginary Builders v. Phantom Safety, 999 F.9th 999 (9th Cir. 2099)` | `fabricated_citation_detection_rate` |
+
+The fabricated-citation case is intentionally obvious. It verifies that generic citation extraction and the verifier's `likely_fabricated` path work, but it is not a substitute for real source-grounded citation lookup.
+
+#### 8. Known limitations
 
 Metrics that honestly expose pipeline weaknesses:
 
 | Metric | What it measures | Expected value |
 |---|---|---|
-| `citation_extraction_recall` | Fraction of expected citations extracted by regex | 1.0 (pattern list covers all citations in this case) |
-| `authority_source_grounding_rate` | Fraction of authority checks grounded in retrieved source text | ~0.17 (only the statute check is grounded; all case-law checks are LLM-only) |
+| `citation_extraction_recall` | Fraction of expected citations extracted by the LLM | Varies by model and prompt behavior |
+| `authority_source_grounding_rate` | Fraction of authority checks grounded in retrieved source text | 0.0 unless primary authority text is supplied or retrieved |
 | `quote_exact_verification_rate` | Fraction of quote checks verified against primary source text | 0.0 (no source text is retrieved) |
 
 These metrics are not failures. They are honest measurements of what the pipeline cannot yet do.
 
-### Latest eval results
-
-```json
-{
-  "precision": 1.0,
-  "core_recall": 1.0,
-  "expanded_recall": 0.857,
-  "hallucination_rate": 0.0,
-  "evidence_grounding_rate": 1.0,
-  "uncertainty_accuracy": 1.0,
-  "mutation_pass_rate": 1.0,
-  "citation_extraction_recall": 1.0,
-  "authority_source_grounding_rate": 0.167,
-  "quote_exact_verification_rate": 0.0
-}
-```
-
 ### How to read these numbers
 
-- **1.0 on core_recall** means the pipeline catches every issue it was designed to catch on this case file. It does not mean it catches every issue that exists.
-- **0.857 expanded recall** means there is at least one real issue (Seabright/OSHA insulation overstatement) that the current flag layer does not surface.
-- **0.167 authority source grounding** means only 1 of 6 citation verifications is grounded in anything beyond LLM parametric knowledge. This is the pipeline's biggest gap.
-- **0.0 quote exact verification** means no direct quote was verified against its primary source. The pipeline can flag overbreadth but cannot confirm exact wording.
-- **0.0 hallucination rate** on this case file is encouraging but is not proof that the pipeline never hallucinates. A more rigorous test would use adversarial inputs.
+Important interpretation:
+
+- **Precision is now semantic.** A flag with an LLM-generated ID can count if its text contains the expected concepts and its status/confidence are acceptable.
+- **Weak matches are useful.** They indicate the model found the right issue but used an imperfect status or confidence score.
+- **Hallucination means unsupported issue, not unexpected ID.** A real date or PPE conflict with an unexpected ID is no longer counted as hallucinated.
+- **Citation extraction recall remains literal.** It still checks whether expected citation terms appeared in extracted citations, so missing `Id. at 702` is a real extraction miss.
+- **Authority and quote grounding require actual primary text.** Model-written `source_basis` language is not enough to count as source-grounded.
+- **Mutation tests are semantic.** They fail only if the same substantive issue remains after the evidence is corrected.
 
 ### Exit code
 
-The eval exits non-zero only if core gold findings are missed, weak-matched, or if negative assertions produce false positives. Aspirational misses and known-limitation metrics do not cause exit 1, because they represent honest gaps rather than regressions.
+The eval exits non-zero if core gold findings are missed, if negative assertions produce false positives, if evidence snippets are ungrounded, if hallucinated flags are produced, or if mutation scenarios fail. Weak matches are reported but do not fail the run because they are useful LLM-quality diagnostics rather than total misses.
 
 ---
 
@@ -409,11 +401,11 @@ The eval exits non-zero only if core gold findings are missed, weak-matched, or 
 
 1. **Legal database retrieval:** The authority verifier and quote checker would be dramatically stronger with access to case-law text. Even scraping free legal sites would move authority_source_grounding_rate from 0.17 to something meaningful.
 
-2. **General citation parsing:** The current regex patterns are specific to this case file. A production system would use a general legal citation parser.
+2. **General citation extraction:** The current implementation relies on the LLM to identify citations. A production system could still add retrieval or parser-assisted validation, but not as a silent substitute for the model in this eval repo.
 
-3. **LLM-based extraction with structured output:** Citation extraction and fact extraction could use LLM calls with JSON output for more flexible handling of different brief styles.
+3. **More extraction evals:** Citation and fact extraction use LLM JSON output, but the eval suite still needs more diverse brief formats to prove that path is reliable.
 
-4. **Adversarial eval inputs:** The eval currently tests one case file. Adding adversarial documents (clean briefs, briefs with fabricated cases, briefs with subtle misquotes) would make metrics more meaningful.
+4. **More adversarial eval inputs:** The eval now includes a clean brief and an obvious fabricated case. It still needs subtle misquotes, plausible fake citations, and clean briefs with richer legal argument.
 
 5. **Per-category metric reporting:** Separate recall for citation issues, quote issues, and fact-consistency issues would make it clearer where the pipeline is strong and where it is weak.
 

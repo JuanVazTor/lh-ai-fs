@@ -116,21 +116,36 @@ The eval harness runs the pipeline on the included Rivera case file and compares
 - overbroad Privette quote
 - weak limitations argument
 
-The eval is intentionally stricter than exact `flag.id` matching. It checks expected status, required terms in the finding text, confidence ranges, evidence grounding, uncertainty behavior, negative assertions that should not be flagged, and mutation scenarios where a corrected source document should make a flag disappear.
+The eval uses semantic concept matching instead of exact `flag.id` matching. Each expected finding defines required concepts, accepted statuses, and confidence bounds, so LLM-generated IDs like `incident_date_march_14_2021` can still match the gold `date_discrepancy` finding when the substance is correct.
 
 Metrics reported:
 
-- `precision`: matched core gold flags divided by all produced flags
+- `precision`: semantically matched core, weak, and aspirational flags divided by all produced flags
 - `core_recall`: matched core gold flags divided by expected core gold flags
 - `expanded_recall`: core plus aspirational findings, including real issues the current pipeline does not yet promote to flags
-- `hallucination_rate`: non-gold, non-uncertainty findings divided by all produced flags
-- `evidence_grounding_rate`: consistency findings whose evidence snippets appear in the cited source documents
+- `weak_match_count`: semantically relevant core findings with imperfect status or confidence
+- `hallucination_rate`: unsupported non-uncertainty flags divided by all produced flags
+- `evidence_grounding_rate`: consistency findings whose evidence snippets appear in named non-MSJ source documents
 - `uncertainty_accuracy`: obscure citations correctly marked with uncertainty and low confidence
 - `mutation_pass_rate`: document mutations that remove the expected flag
+- `clean_case_false_positive_rate`: contradiction/fabrication flags emitted on a clean synthetic brief
+- `fabricated_citation_detection_rate`: detection of an obvious synthetic fabricated citation
 - `authority_source_grounding_rate`: citation checks grounded in retrieved source authority text; currently expected to be low because this implementation is LLM-only for legal authority
 - `quote_exact_verification_rate`: direct quote checks verified against source authority text; currently expected to be low without case-law retrieval
 
-This implementation is deterministic by default and does not require `OPENAI_API_KEY` to run. The authority-verification agent follows an LLM-only-with-uncertainty design: obscure citations are marked `could_not_verify` instead of treated as proved or fabricated.
+This implementation requires `OPENAI_API_KEY`. The analysis agents call the LLM for extraction, authority verification, quote checking, fact consistency analysis, and judicial memo synthesis. If the key is missing or an LLM response fails schema validation, the affected agent records an error instead of using deterministic fallback logic.
+
+### Interpreting LLM Eval Results
+
+The LLM-only eval is designed to measure substance rather than deterministic labels. A finding can pass if its text contains the required concepts, uses an accepted status, and falls within the confidence range. Findings with the right substance but imperfect status or confidence are reported as `weak_matches`, not hallucinations.
+
+The eval still intentionally exposes model weaknesses:
+
+- Citation extraction recall shows whether the model found expected citations, including short-form citations like `Id. at 702`.
+- Uncertainty accuracy shows whether the model refuses to over-trust obscure authorities without source text.
+- Grounding checks require fact evidence to appear in non-MSJ source documents, not merely in the motion itself.
+- Authority and quote source-grounding rates remain low unless primary authority text is actually supplied or retrieved.
+- Mutation tests now look for semantic issues after document changes, not fixed flag IDs.
 
 ## AI Usage
 

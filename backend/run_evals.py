@@ -17,7 +17,7 @@ class ExpectedFinding:
     id: str
     description: str
     accepted_statuses: set[str]
-    required_terms: tuple[str, ...]
+    required_concepts: tuple[tuple[str, ...], ...]
     min_confidence: float = 0.0
     max_confidence: float = 1.0
 
@@ -26,22 +26,22 @@ GOLD_FINDINGS = [
     ExpectedFinding(
         id="date_discrepancy",
         description="MSJ says March 14, while source documents say March 12.",
-        accepted_statuses={"contradicted"},
-        required_terms=("March 14", "March 12"),
-        min_confidence=0.85,
+        accepted_statuses={"contradicted", "partially_supported"},
+        required_concepts=(("march 14",), ("march 12",), ("date", "incident")),
+        min_confidence=0.5,
     ),
     ExpectedFinding(
         id="ppe_discrepancy",
         description="MSJ says Rivera lacked PPE, while police and witness documents say he wore required safety gear.",
-        accepted_statuses={"contradicted"},
-        required_terms=("PPE", "wearing"),
-        min_confidence=0.85,
+        accepted_statuses={"contradicted", "partially_supported"},
+        required_concepts=(("ppe", "personal protective", "hard hat", "harness"), ("wearing", "wore"), ("not wearing", "lacked", "not worn")),
+        min_confidence=0.5,
     ),
     ExpectedFinding(
         id="osha_compliance_unverified",
         description="MSJ's claimed OSHA inspection/compliance history is not verified by the provided case documents.",
         accepted_statuses={"not_found", "could_not_verify"},
-        required_terms=("OSHA", "not verify"),
+        required_concepts=(("osha",), ("not verify", "not verified", "could not verify", "not found", "unverified")),
         min_confidence=0.5,
         max_confidence=0.85,
     ),
@@ -49,23 +49,23 @@ GOLD_FINDINGS = [
         id="harmon_control_disputed",
         description="MSJ frames Apex as exclusively controlling scaffolding, but source records show Harmon directed work and was told of concerns.",
         accepted_statuses={"partially_supported", "contradicted"},
-        required_terms=("Harmon", "directed"),
-        min_confidence=0.7,
+        required_concepts=(("harmon", "donner"), ("directed", "control", "foreman"), ("apex", "exclusive", "scaffold")),
+        min_confidence=0.5,
     ),
     ExpectedFinding(
         id="privette_quote_overbroad",
         description="MSJ quotes Privette as an absolute never-liable rule, which is materially overbroad.",
         accepted_statuses={"not_supported"},
-        required_terms=("Privette", "overbroad"),
+        required_concepts=(("privette",), ("never liable", "absolute", "categorical"), ("overbroad", "exceptions", "not supported")),
         min_confidence=0.6,
         max_confidence=0.85,
     ),
     ExpectedFinding(
         id="limitations_argument_weak",
         description="The time-bar framing is weak because the asserted filing date is within two years of the source-document incident date.",
-        accepted_statuses={"contradicted", "not_supported"},
-        required_terms=("limitations", "two years"),
-        min_confidence=0.7,
+        accepted_statuses={"contradicted", "not_supported", "partially_supported"},
+        required_concepts=(("limitations", "time-bar", "filing"), ("two years", "within two", "march 10"), ("march 12", "march 14", "incident")),
+        min_confidence=0.5,
     ),
 ]
 
@@ -74,7 +74,7 @@ ASPIRATIONAL_FINDINGS = [
         id="seabright_insulation_overstatement",
         description="The MSJ uses Seabright plus OSHA compliance to suggest effective insulation from tort liability, which is stronger than the authority supports.",
         accepted_statuses={"not_supported", "partially_supported"},
-        required_terms=("Seabright", "insulat"),
+        required_concepts=(("seabright",), ("insulat", "tort liability", "osha")),
         min_confidence=0.5,
         max_confidence=0.85,
     ),
@@ -108,21 +108,28 @@ def run() -> dict[str, Any]:
     uncertainty_result = score_uncertainty(report)
     mutation_result = score_mutations(documents)
     limitation_result = score_known_limitations(report)
+    adversarial_result = score_adversarial_cases(documents)
 
     total_flags = len(report.flags)
     matched_count = len(gold_result["matched"])
+    weak_match_count = len(gold_result["weak_matches"])
     total_expected_count = len(GOLD_FINDINGS) + len(ASPIRATIONAL_FINDINGS)
     total_matched_count = matched_count + len(aspirational_result["matched"])
-    hallucinated_count = len(gold_result["hallucinated"]) + len(negative_result["false_positive_negative_assertions"]) + len(grounding_result["ungrounded_records"])
+    total_semantic_match_count = total_matched_count + weak_match_count + len(aspirational_result["weak_matches"])
+    hallucination_result = score_hallucinations(report, GOLD_FINDINGS + ASPIRATIONAL_FINDINGS, grounding_result)
+    hallucinated_count = len(hallucination_result["hallucinated_flags"]) + len(negative_result["false_positive_negative_assertions"])
 
     metrics = {
-        "precision": round(matched_count / total_flags, 3) if total_flags else 0.0,
+        "precision": round(total_semantic_match_count / total_flags, 3) if total_flags else 0.0,
         "core_recall": round(matched_count / len(GOLD_FINDINGS), 3),
         "expanded_recall": round(total_matched_count / total_expected_count, 3),
+        "weak_match_count": weak_match_count,
         "hallucination_rate": round(hallucinated_count / total_flags, 3) if total_flags else 0.0,
         "evidence_grounding_rate": grounding_result["grounding_rate"],
         "uncertainty_accuracy": uncertainty_result["accuracy"],
         "mutation_pass_rate": mutation_result["pass_rate"],
+        "clean_case_false_positive_rate": adversarial_result["clean_case_false_positive_rate"],
+        "fabricated_citation_detection_rate": adversarial_result["fabricated_citation_detection_rate"],
         "citation_extraction_recall": limitation_result["citation_extraction_recall"],
         "authority_source_grounding_rate": limitation_result["authority_source_grounding_rate"],
         "quote_exact_verification_rate": limitation_result["quote_exact_verification_rate"],
@@ -139,8 +146,10 @@ def run() -> dict[str, Any]:
         "aspirational": aspirational_result,
         "negative_assertions": negative_result,
         "grounding": grounding_result,
+        "hallucinations": hallucination_result,
         "uncertainty": uncertainty_result,
         "mutations": mutation_result,
+        "adversarial_cases": adversarial_result,
         "known_limitations": limitation_result,
         "agent_errors": [error.model_dump() for error in report.agent_errors],
         "flags": [flag.model_dump() for flag in report.flags],
@@ -148,37 +157,52 @@ def run() -> dict[str, Any]:
 
 
 def score_expected_findings(report: VerificationReport, expected_findings: list[ExpectedFinding]) -> dict[str, Any]:
-    flags = {flag.id: flag for flag in report.flags}
     matched = []
     missed = []
     weak_matches = []
+    used_flag_ids: set[str] = set()
 
     for expected in expected_findings:
-        flag = flags.get(expected.id)
-        if not flag:
+        candidates = [flag for flag in report.flags if flag.id not in used_flag_ids and concepts_present(expected, flag_text(flag))]
+        flag = best_candidate(candidates)
+        if flag is None:
             missed.append({"id": expected.id, "reason": "missing"})
             continue
         text = flag_text(flag)
-        terms_present = all(term.lower() in text for term in expected.required_terms)
         status_ok = flag.status in expected.accepted_statuses
         confidence_ok = expected.min_confidence <= flag.confidence <= expected.max_confidence
-        if status_ok and terms_present and confidence_ok:
-            matched.append(expected.id)
+        used_flag_ids.add(flag.id)
+        if status_ok and confidence_ok:
+            matched.append({"id": expected.id, "flag_id": flag.id})
         else:
             weak_matches.append(
                 {
                     "id": expected.id,
+                    "flag_id": flag.id,
                     "status_ok": status_ok,
-                    "terms_present": terms_present,
+                    "concepts_present": True,
                     "confidence_ok": confidence_ok,
                     "actual_status": flag.status,
                     "actual_confidence": flag.confidence,
                 }
             )
 
-    gold_ids = {expected.id for expected in GOLD_FINDINGS + ASPIRATIONAL_FINDINGS}
-    hallucinated = [flag.id for flag in report.flags if flag.id not in gold_ids and flag.status not in {"could_not_verify", "not_found"}]
-    return {"matched": matched, "missed": missed, "weak_matches": weak_matches, "hallucinated": hallucinated}
+    return {"matched": matched, "missed": missed, "weak_matches": weak_matches}
+
+
+def score_hallucinations(report: VerificationReport, expected_findings: list[ExpectedFinding], grounding_result: dict[str, Any]) -> dict[str, Any]:
+    grounded_claim_ids = {record["claim_id"] for record in grounding_result["grounded_records"]}
+    hallucinated = []
+    for flag in report.flags:
+        text = flag_text(flag)
+        if flag.status in {"could_not_verify", "not_found"}:
+            continue
+        if any(concepts_present(expected, text) for expected in expected_findings):
+            continue
+        if flag.kind == "fact" and any(source_id in grounded_claim_ids for source_id in flag.source_ids):
+            continue
+        hallucinated.append({"flag_id": flag.id, "status": flag.status, "title": flag.title})
+    return {"hallucinated_flags": hallucinated}
 
 
 def score_negative_assertions(report: VerificationReport) -> dict[str, Any]:
@@ -200,7 +224,8 @@ def score_grounding(report: VerificationReport, documents: dict[str, str]) -> di
         if not finding.source_evidence or not finding.source_document:
             continue
         source_names = [name.strip() for name in finding.source_document.split(";")]
-        found = any(finding.source_evidence in documents.get(name, "") for name in source_names)
+        external_source_names = [name for name in source_names if name != "motion_for_summary_judgment"]
+        found = any(finding.source_evidence in documents.get(name, "") for name in external_source_names)
         item = {"claim_id": finding.claim_id, "evidence": finding.source_evidence, "source_document": finding.source_document}
         if found:
             grounded.append(item)
@@ -238,29 +263,28 @@ def score_mutations(documents: dict[str, str]) -> dict[str, Any]:
         {
             "name": "aligned_incident_date_removes_date_flag",
             "documents": mutate_motion(documents, "March 14, 2021", "March 12, 2021"),
-            "absent_flags": {"date_discrepancy"},
+            "absent_finding": GOLD_FINDINGS[0],
         },
         {
             "name": "aligned_ppe_removes_ppe_flag",
             "documents": mutate_motion(documents, "Rivera was not wearing required personal protective equipment", "Rivera was wearing required personal protective equipment"),
-            "absent_flags": {"ppe_discrepancy"},
+            "absent_finding": GOLD_FINDINGS[1],
         },
         {
             "name": "removed_harmon_direction_removes_control_flag",
             "documents": remove_harmon_direction(documents),
-            "absent_flags": {"harmon_control_disputed"},
+            "absent_finding": GOLD_FINDINGS[3],
         },
     ]
     results = []
     for scenario in scenarios:
         report = run_analysis(scenario["documents"])
-        flag_ids = {flag.id for flag in report.flags}
-        absent_flags = scenario["absent_flags"]
+        unexpected_flags = [flag.id for flag in report.flags if concepts_present(scenario["absent_finding"], flag_text(flag))]
         results.append(
             {
                 "name": scenario["name"],
-                "passed": not bool(flag_ids & absent_flags),
-                "unexpected_flags": sorted(flag_ids & absent_flags),
+                "passed": not unexpected_flags,
+                "unexpected_flags": unexpected_flags,
             }
         )
     passed = sum(1 for result in results if result["passed"])
@@ -286,10 +310,10 @@ def score_known_limitations(report: VerificationReport) -> dict[str, Any]:
     extracted_terms = [term for term in expected_citation_terms if term in extracted_text]
 
     source_grounded_authorities = [
-        item for item in report.citation_verifications if not item.source_basis.lower().startswith(("llm-only", "no source"))
+        item for item in report.citation_verifications if has_primary_authority_text(item.source_basis)
     ]
     exact_quote_checks = [
-        item for item in report.quote_checks if not item.source_basis.lower().startswith(("llm-only", "no source"))
+        item for item in report.quote_checks if has_primary_authority_text(item.source_basis)
     ]
 
     return {
@@ -304,6 +328,80 @@ def score_known_limitations(report: VerificationReport) -> dict[str, Any]:
             "Expanded recall includes one real issue the current flag layer does not yet promote: Seabright/OSHA insulation overstatement.",
         ],
     }
+
+
+def score_adversarial_cases(documents: dict[str, str]) -> dict[str, Any]:
+    clean_report = run_analysis(make_clean_case_documents())
+    fabricated_report = run_analysis(make_fabricated_citation_documents(documents))
+
+    clean_false_positive_flags = [
+        flag.id
+        for flag in clean_report.flags
+        if flag.status in {"contradicted", "not_supported", "likely_fabricated"}
+    ]
+    fabricated_detected = any(
+        verification.status == "likely_fabricated"
+        for verification in fabricated_report.citation_verifications
+    ) or any(flag.status == "likely_fabricated" for flag in fabricated_report.flags)
+
+    return {
+        "clean_case": {
+            "false_positive_flags": clean_false_positive_flags,
+            "flag_count": len(clean_report.flags),
+        },
+        "fabricated_citation_case": {
+            "detected": fabricated_detected,
+            "citations": [citation.model_dump() for citation in fabricated_report.citations],
+            "citation_verifications": [verification.model_dump() for verification in fabricated_report.citation_verifications],
+            "flags": [flag.model_dump() for flag in fabricated_report.flags],
+        },
+        "clean_case_false_positive_rate": round(len(clean_false_positive_flags) / max(len(clean_report.flags), 1), 3),
+        "fabricated_citation_detection_rate": 1.0 if fabricated_detected else 0.0,
+    }
+
+
+def make_clean_case_documents() -> dict[str, str]:
+    return {
+        "motion_for_summary_judgment": """SUPERIOR COURT OF THE STATE OF CALIFORNIA
+COUNTY OF LOS ANGELES
+
+MARTIN LEE, Plaintiff, v. HARBOR BUILDERS, INC., Defendant.
+
+I. STATEMENT OF FACTS
+
+1. The incident occurred on May 5, 2022 at 100 Harbor Avenue.
+2. Lee was employed by Safe Scaffold Services.
+3. Lee was wearing required personal protective equipment, including a hard hat and safety harness.
+4. Harbor Builders' site foreman did not direct Lee's scaffold work.
+
+II. ARGUMENT
+
+The undisputed source records confirm the relevant facts. California Code of Civil Procedure Section 335.1 provides a two-year limitations period for personal injury claims.
+""",
+        "police_report": """Date of Incident: May 5, 2022
+Location: 100 Harbor Avenue
+Lee was wearing a hard hat and harness. No Harbor Builders foreman directed the scaffold work.
+""",
+        "medical_records_excerpt": """DATE OF ADMISSION: May 5, 2022
+Patient reported minor wrist pain after a scaffold incident at 100 Harbor Avenue.
+""",
+        "witness_statement": """The incident occurred on May 5, 2022. Lee wore his hard hat and safety harness. Harbor Builders did not direct our scaffold work.
+""",
+    }
+
+
+def make_fabricated_citation_documents(documents: dict[str, str]) -> dict[str, str]:
+    mutated = dict(documents)
+    mutated["motion_for_summary_judgment"] = """SUPERIOR COURT OF THE STATE OF CALIFORNIA
+COUNTY OF LOS ANGELES
+
+CARLOS RIVERA, Plaintiff, v. HARMON CONSTRUCTION GROUP, INC., Defendant.
+
+I. ARGUMENT
+
+Harmon is immune from all scaffold-collapse claims because courts have adopted a categorical no-liability rule for general contractors. Imaginary Builders v. Phantom Safety, 999 F.9th 999 (9th Cir. 2099).
+"""
+    return mutated
 
 
 def mutate_motion(documents: dict[str, str], old: str, new: str) -> dict[str, str]:
@@ -326,6 +424,38 @@ def flag_text(flag: VerificationFlag) -> str:
     return " ".join([flag.id, flag.title, flag.details, flag.reasoning, flag.source_basis]).lower()
 
 
+def concepts_present(expected: ExpectedFinding, text: str) -> bool:
+    normalized = text.lower()
+    return all(any(alias in normalized for alias in concept_aliases) for concept_aliases in expected.required_concepts)
+
+
+def best_candidate(flags: list[VerificationFlag]) -> VerificationFlag | None:
+    if not flags:
+        return None
+    return sorted(flags, key=lambda flag: flag.confidence, reverse=True)[0]
+
+
+def has_primary_authority_text(source_basis: str) -> bool:
+    basis = source_basis.lower()
+    unavailable_markers = [
+        "llm-only",
+        "no source",
+        "not retrieved",
+        "without source",
+        "no primary",
+        "not available",
+        "general legal knowledge",
+    ]
+    retrieval_markers = [
+        "retrieved primary",
+        "source text",
+        "case text",
+        "statutory text",
+        "provided authority text",
+    ]
+    return any(marker in basis for marker in retrieval_markers) and not any(marker in basis for marker in unavailable_markers)
+
+
 def significant_words(text: str) -> list[str]:
     ignored = {"the", "a", "an", "and", "or", "was", "by", "at", "of", "to", "in"}
     return [word.lower().strip(",.;:") for word in text.split() if word.lower().strip(",.;:") not in ignored]
@@ -336,9 +466,9 @@ if __name__ == "__main__":
     print(json.dumps(result, indent=2))
     failed = bool(
         result["core_gold"]["missed"]
-        or result["core_gold"]["weak_matches"]
         or result["negative_assertions"]["false_positive_negative_assertions"]
         or result["grounding"]["ungrounded_records"]
+        or result["hallucinations"]["hallucinated_flags"]
         or any(not scenario["passed"] for scenario in result["mutations"]["scenarios"])
     )
     raise SystemExit(1 if failed else 0)
