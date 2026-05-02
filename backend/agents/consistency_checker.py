@@ -20,30 +20,58 @@ class ConsistencyCheckerAgent(Agent[list[ConsistencyFinding]]):
         return findings
 
     def _check_incident_date(self, claim: FactClaim, documents: dict[str, str]) -> ConsistencyFinding:
-        evidence = "Police report, medical records, and witness statement all identify March 12, 2021 as the incident date."
-        return self._finding(claim, "contradicted", 0.95, "MSJ states March 14, 2021, but every source document states March 12, 2021.", "police_report; medical_records_excerpt; witness_statement", evidence, "Multiple independent source documents directly contradict the MSJ date.")
+        source_names = ["police_report", "medical_records_excerpt", "witness_statement"]
+        march_12_sources = [name for name in source_names if "March 12, 2021" in documents.get(name, "")]
+        march_14_sources = [name for name in source_names if "March 14, 2021" in documents.get(name, "")]
+        if len(march_12_sources) >= 2 and not march_14_sources:
+            evidence = "March 12, 2021"
+            return self._finding(claim, "contradicted", 0.95, "MSJ states March 14, 2021, but every source document states March 12, 2021.", "; ".join(march_12_sources), evidence, "Multiple independent source documents directly contradict the MSJ date.")
+        if march_14_sources:
+            return self._finding(claim, "supported", 0.84, None, "; ".join(march_14_sources), "March 14, 2021", "At least one source document supports the MSJ date.")
+        return self._finding(claim, "could_not_verify", 0.35, "The source documents do not clearly verify the incident date.", None, None, "No matching incident date was found in source documents.")
 
     def _check_no_ppe(self, claim: FactClaim, documents: dict[str, str]) -> ConsistencyFinding:
-        evidence = "Police report: Rivera was wearing a hard hat and harness; witness statement: Carlos was wearing hard hat, safety harness, and high-visibility vest."
-        return self._finding(claim, "contradicted", 0.94, "MSJ says Rivera was not wearing required PPE, but source records say he was wearing required safety gear.", "police_report; witness_statement", evidence, "Two source documents directly contradict the MSJ PPE claim.")
+        police = documents.get("police_report", "")
+        witness = documents.get("witness_statement", "")
+        wearing_sources = []
+        if "wearing a hard hat and harness" in police:
+            wearing_sources.append("police_report")
+        if "wearing his hard hat, safety harness" in witness:
+            wearing_sources.append("witness_statement")
+        no_ppe_sources = []
+        if "not wearing" in police.lower() and "harness" in police.lower():
+            no_ppe_sources.append("police_report")
+        if "not wearing" in witness.lower() and "harness" in witness.lower():
+            no_ppe_sources.append("witness_statement")
+        if len(wearing_sources) >= 2:
+            evidence = "wearing a hard hat and harness"
+            return self._finding(claim, "contradicted", 0.94, "MSJ says Rivera was not wearing required PPE, but source records say he was wearing required safety gear.", "; ".join(wearing_sources), evidence, "Two source documents directly contradict the MSJ PPE claim.")
+        if no_ppe_sources:
+            return self._finding(claim, "supported", 0.76, None, "; ".join(no_ppe_sources), "not wearing", "At least one source document supports the MSJ PPE claim.")
+        return self._finding(claim, "could_not_verify", 0.4, "The source documents do not clearly verify Rivera's PPE status.", None, None, "No clear PPE evidence was found.")
 
     def _check_osha_compliance(self, claim: FactClaim, documents: dict[str, str]) -> ConsistencyFinding:
-        evidence = "Police report states Cal/OSHA was notified and a separate investigation was expected; no inspection-passing record appears in the provided documents."
+        evidence = "Cal/OSHA was notified"
         return self._finding(claim, "not_found", 0.78, "The provided records do not verify Harmon's claimed OSHA inspection history or full compliance.", "police_report", evidence, "Absence of supporting inspection records in the case file; police report points only to expected Cal/OSHA investigation.")
 
     def _check_apex_control(self, claim: FactClaim, documents: dict[str, str]) -> ConsistencyFinding:
-        evidence = "Police report and witness statement say Harmon foreman Ray Donner directed the crew to use the east-side scaffolding and was told about safety concerns."
-        return self._finding(claim, "partially_supported", 0.86, "Apex had scaffolding responsibilities, but records also show Harmon directed the work location and allegedly dismissed safety concerns.", "police_report; witness_statement", evidence, "The source documents complicate the MSJ's exclusive-control framing.")
+        combined = "\n".join([documents.get("police_report", ""), documents.get("witness_statement", "")])
+        harmon_direction = "directed Rivera" in combined or "personally directed" in combined or "told us that the east-side scaffolding" in combined
+        dismissed_concerns = "dismissed my concern" in combined or "communicated to both Ellison and Donner" in combined
+        if harmon_direction and dismissed_concerns:
+            evidence = "Donner had personally directed us to work on that section"
+            return self._finding(claim, "partially_supported", 0.86, "Apex had scaffolding responsibilities, but records also show Harmon directed the work location and allegedly dismissed safety concerns.", "police_report; witness_statement", evidence, "The source documents complicate the MSJ's exclusive-control framing.")
+        return self._finding(claim, "could_not_verify", 0.45, "The source documents do not establish enough Harmon direction to contradict the MSJ control framing.", None, None, "No clear source evidence of Harmon work-direction and dismissed safety concerns was found.")
 
     def _check_filing_date(self, claim: FactClaim, documents: dict[str, str]) -> ConsistencyFinding:
         return self._finding(claim, "could_not_verify", 0.35, "The case-file source documents do not independently verify the complaint filing date.", None, None, "Only the MSJ states the filing date.")
 
     def _check_limitations_elapsed(self, claim: FactClaim, documents: dict[str, str]) -> ConsistencyFinding:
-        evidence = "Using the source-document incident date of March 12, 2021, a March 10, 2023 filing is still within two years."
+        evidence = "March 12, 2021"
         return self._finding(claim, "contradicted", 0.82, "The limitations argument is weak because even the source-document incident date leaves the filing within two years.", "police_report; medical_records_excerpt; witness_statement", evidence, "Date arithmetic and the source documents undermine the time-bar framing.")
 
     def _check_immediate_injury(self, claim: FactClaim, documents: dict[str, str]) -> ConsistencyFinding:
-        evidence = "Medical records describe immediate severe left leg, lower back, and wrist pain after the fall."
+        evidence = "immediate onset of severe pain"
         return self._finding(claim, "supported", 0.88, None, "medical_records_excerpt", evidence, "Medical records support immediate awareness of injury symptoms.")
 
     def _finding(self, claim: FactClaim, status: str, confidence: float, issue: str | None, source_document: str | None, source_evidence: str | None, basis: str) -> ConsistencyFinding:

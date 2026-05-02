@@ -116,11 +116,19 @@ The eval harness runs the pipeline on the included Rivera case file and compares
 - overbroad Privette quote
 - weak limitations argument
 
+The eval is intentionally stricter than exact `flag.id` matching. It checks expected status, required terms in the finding text, confidence ranges, evidence grounding, uncertainty behavior, negative assertions that should not be flagged, and mutation scenarios where a corrected source document should make a flag disappear.
+
 Metrics reported:
 
-- `precision`: matched gold flags divided by all produced flags
-- `recall`: matched gold flags divided by expected gold flags
+- `precision`: matched core gold flags divided by all produced flags
+- `core_recall`: matched core gold flags divided by expected core gold flags
+- `expanded_recall`: core plus aspirational findings, including real issues the current pipeline does not yet promote to flags
 - `hallucination_rate`: non-gold, non-uncertainty findings divided by all produced flags
+- `evidence_grounding_rate`: consistency findings whose evidence snippets appear in the cited source documents
+- `uncertainty_accuracy`: obscure citations correctly marked with uncertainty and low confidence
+- `mutation_pass_rate`: document mutations that remove the expected flag
+- `authority_source_grounding_rate`: citation checks grounded in retrieved source authority text; currently expected to be low because this implementation is LLM-only for legal authority
+- `quote_exact_verification_rate`: direct quote checks verified against source authority text; currently expected to be low without case-law retrieval
 
 This implementation is deterministic by default and does not require `OPENAI_API_KEY` to run. The authority-verification agent follows an LLM-only-with-uncertainty design: obscure citations are marked `could_not_verify` instead of treated as proved or fabricated.
 
