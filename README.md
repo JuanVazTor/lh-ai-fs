@@ -83,6 +83,47 @@ Build a multi-agent pipeline that analyzes these documents and produces a struct
 
 We run your eval suite as part of our review. Document how to run it in your README. We care more about thoughtful metric design than perfect scores — an eval that honestly reports 60% recall tells us more than one that reports 100% on cherry-picked cases.
 
+### Run the Verification Pipeline
+
+Start the backend, then call the analysis endpoint:
+
+```bash
+cd backend
+uvicorn main:app --reload --port 8002
+```
+
+```bash
+curl -X POST http://localhost:8002/analyze
+```
+
+The endpoint returns a structured JSON report with extracted citations, citation verification, quote checks, fact claims, cross-document findings, normalized flags, agent errors, metadata, and a one-paragraph judicial memo.
+
+### Run Evals
+
+From the backend directory:
+
+```bash
+cd backend
+python run_evals.py
+```
+
+The eval harness runs the pipeline on the included Rivera case file and compares the report against a small gold set of known flaws:
+
+- incident-date discrepancy
+- PPE discrepancy
+- unverified OSHA compliance claim
+- disputed Harmon/Apex control framing
+- overbroad Privette quote
+- weak limitations argument
+
+Metrics reported:
+
+- `precision`: matched gold flags divided by all produced flags
+- `recall`: matched gold flags divided by expected gold flags
+- `hallucination_rate`: non-gold, non-uncertainty findings divided by all produced flags
+
+This implementation is deterministic by default and does not require `OPENAI_API_KEY` to run. The authority-verification agent follows an LLM-only-with-uncertainty design: obscure citations are marked `could_not_verify` instead of treated as proved or fabricated.
+
 ## AI Usage
 
 Use everything. That's the job. We want to see how you use it, not whether you do.

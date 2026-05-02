@@ -1,6 +1,9 @@
+from pathlib import Path
+
+from agents import run_analysis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
+from schemas import VerificationReport
 
 app = FastAPI()
 
@@ -24,7 +27,6 @@ def load_documents() -> dict[str, str]:
 
 
 @app.post("/analyze")
-async def analyze():
+def analyze() -> dict[str, VerificationReport]:
     documents = load_documents()
-    # TODO: Build your multi-agent pipeline here
-    return {"report": None}
+    return {"report": run_analysis(documents)}
