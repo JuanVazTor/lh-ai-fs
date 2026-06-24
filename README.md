@@ -9,6 +9,92 @@ Your task has two parts:
 
 Treat both parts seriously. The production readiness plan is not an appendix; it is the second half of the challenge and will be a major focus of the follow-up interview.
 
+---
+
+## Submission (candidate)
+
+This section documents what was built. The original challenge brief follows below.
+
+### What's here
+
+- **`POST /analyze`** runs a 7-node pipeline (5 LLM agents + 2 deterministic gates)
+  over the case file and returns a structured JSON verification report.
+- **Eval harness** (`backend/run_evals.py`) scores the pipeline against a
+  hand-labeled ground truth and reports precision, recall, hallucination rate, plus
+  run-to-run variance, per-agent precision, and confidence calibration.
+- **Eval findings** — [`docs/eval-findings.md`](docs/eval-findings.md): the metrics,
+  the before/after of the deterministic gates, and the residual error indicators.
+- **Reflection** — [`REFLECTION.md`](REFLECTION.md): design decisions, tradeoffs,
+  and what I'd do differently.
+- **Production readiness plan** — [`docs/production-readiness.md`](docs/production-readiness.md).
+
+### Architecture
+
+The pipeline is a [LangGraph](https://github.com/langchain-ai/langgraph) `StateGraph`
+that threads one typed `PipelineState` (Pydantic) through five LLM agents and two
+**deterministic, no-LLM** gate nodes. Every node passes structured objects, never raw
+text, and is wrapped so a failure is recorded in `state.errors` and the pipeline
+degrades gracefully instead of crashing.
+
+```
+POST /analyze
+  └─ extract ─► verify ─► cross_doc ─► score ─► calc ─► grounding ─► memo
+       │          │           │          │       │          │          │
+  Citation   Citation    CrossDoc   Confidence  Calc.   Grounding   Judicial
+  Extractor  Verifier    Checker     Scorer     (det.)  Gate (det.)   Memo
+```
+
+The two deterministic nodes run late on purpose: `calc` runs *after* the LLM scorer so
+its deterministic high-confidence rating isn't second-guessed, and `grounding` has the
+final say, so the memo reflects the gated results.
+
+| Node | Role | File |
+|------|------|------|
+| CitationExtractor | Pull every citation + attributed quote from the MSJ | `backend/agents/extractor.py` |
+| CitationVerifier | Per-citation: misquote / misapplied / can't-verify | `backend/agents/verifier.py` |
+| CrossDocChecker | MSJ facts vs. police report, medical records, witness statement | `backend/agents/cross_doc.py` |
+| ConfidenceScorer | Calibrated high/medium/low + reasoning per flag | `backend/agents/confidence.py` |
+| Calculator *(deterministic)* | Date arithmetic for elapsed-time claims (no LLM) | `backend/agents/calculator.py` |
+| GroundingGate *(deterministic)* | Downgrade any confident flag not verbatim-grounded (no LLM) | `backend/agents/grounding.py` |
+| JudicialMemo | One-paragraph synthesis for the judge | `backend/agents/memo.py` |
+
+All LLM system prompts live in one inspectable file: `backend/agents/prompts.py`.
+The typed state contract is in `backend/agents/state.py`.
+
+### Running the evals
+
+The suite runs the pipeline over the case file, matches its flags against
+`backend/evals/ground_truth.json`, and prints the metrics with per-flaw detail.
+
+```bash
+# With Docker running (recommended):
+docker compose exec backend python run_evals.py
+
+# Or locally from the backend dir (needs OPENAI_API_KEY):
+cd backend && python run_evals.py
+
+# Score the last saved run without spending API tokens:
+cd backend && python run_evals.py --cached
+
+# Run N times and report mean ± std + extra error indicators, then write
+# docs/eval-findings.md (--reuse re-aggregates saved runs with no API cost):
+cd backend && python run_evals.py --runs 5
+```
+
+**Metrics reported:**
+- **Precision** — share of confidently-asserted flags that match a real flaw (penalizes false alarms).
+- **Recall** — share of *text-verifiable* flaws the pipeline caught.
+- **Hallucination rate** — share of flags that confidently assert a flaw matching nothing in the ground truth. A `could_not_verify` output is never counted as a hallucination — abstention is honest.
+- **Multi-run indicators** (`--runs N`): run-to-run variance (mean ± std), F1, per-agent precision, confidence calibration, and silent-vs-explicit abstention.
+
+Latest honest numbers (5 runs, gpt-4o, temperature=0): **precision 77% ±11%,
+recall 100%, hallucination 12% ±6%, F1 87%**. The full breakdown — including the
+before/after of the deterministic gates and the remaining failure modes — is in
+[`docs/eval-findings.md`](docs/eval-findings.md). See [`REFLECTION.md`](REFLECTION.md)
+for how the metrics are defined and why.
+
+---
+
 ## Setup
 
 ### Docker (recommended)

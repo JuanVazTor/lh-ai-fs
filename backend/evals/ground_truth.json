@@ -1,0 +1,77 @@
+{
+  "description": "Hand-labeled known flaws in the Rivera v. Harmon MSJ. Each entry is a defect a strong pipeline should surface (or honestly abstain on). 'expected_verdict' encodes the correct answer given the pipeline has no legal database: text-verifiable flaws should be flagged with a definite verdict; case-existence/domain claims should be 'could_not_verify', not asserted as fake.",
+  "flaws": [
+    {
+      "id": "gt-1",
+      "type": "fact_contradiction",
+      "summary": "Incident date is March 14, 2021 in the MSJ but March 12, 2021 in the police report, medical records, and witness statement.",
+      "match_keywords": ["march 14", "march 12"],
+      "expected_verdict": "contradicted",
+      "verifiable": true,
+      "sources": ["police_report", "medical_records_excerpt", "witness_statement"]
+    },
+    {
+      "id": "gt-2",
+      "type": "fact_contradiction",
+      "summary": "MSJ claims Rivera was not wearing required PPE / fall-arrest equipment. Police report and witness statement say he was wearing a hard hat and harness; the lanyard pulled free because the anchor point was part of the section that collapsed.",
+      "match_keywords": ["ppe", "personal protective", "harness", "fall-arrest", "hard hat", "anchor", "lanyard", "not wearing"],
+      "expected_verdict": "contradicted",
+      "verifiable": true,
+      "sources": ["police_report", "witness_statement"]
+    },
+    {
+      "id": "gt-3",
+      "type": "misquote",
+      "summary": "MSJ quotes Privette as 'A hirer is never liable for injuries sustained by an independent contractor's employees...'. The Privette doctrine is a presumption with recognized exceptions, not an absolute 'never' rule. The absolute word overstates the holding.",
+      "match_keywords": ["privette", "never liable", "hirer", "quote"],
+      "expected_verdict": "unsupported",
+      "verifiable": true,
+      "sources": ["motion_for_summary_judgment"]
+    },
+    {
+      "id": "gt-4",
+      "type": "omission",
+      "summary": "MSJ invokes Privette but omits the retained-control exception. The record shows Harmon's foreman Ray Donner personally directed the crew onto the known-defective scaffold and dismissed a raised safety concern about the base plate — facts that trigger the exception the MSJ ignores.",
+      "match_keywords": ["retained control", "donner", "directed", "exception", "privette", "foreman", "base plate"],
+      "expected_verdict": "contradicted",
+      "verifiable": true,
+      "sources": ["witness_statement", "police_report"]
+    },
+    {
+      "id": "gt-5",
+      "type": "calculation_error",
+      "summary": "MSJ states the filing was 'one year and 362 days' after the incident. The day count is wrong and is built on the contradicted incident date; the limitations argument is internally inconsistent.",
+      "match_keywords": ["362 days", "361", "one year and", "statute of limitations", "335.1", "time-barred"],
+      "expected_verdict": "unsupported",
+      "verifiable": true,
+      "sources": ["motion_for_summary_judgment"]
+    },
+    {
+      "id": "gt-6",
+      "type": "fake_citation",
+      "summary": "Whitmore v. Delgado Scaffolding Co., 334 F. Supp. 2d 1189 (C.D. Cal. 2004) — not locatable in standard reporters; likely fabricated. Pipeline has no legal DB, so the HONEST answer is could_not_verify, not a confident 'fake' assertion.",
+      "match_keywords": ["whitmore", "delgado scaffolding", "334 f. supp"],
+      "expected_verdict": "could_not_verify",
+      "verifiable": false,
+      "sources": ["motion_for_summary_judgment"]
+    },
+    {
+      "id": "gt-7",
+      "type": "fake_citation",
+      "summary": "Kellerman v. Pacific Coast Construction, Inc., 887 F.2d 1204 (9th Cir. 1991) — not locatable; likely fabricated, including its quoted OSHA-compliance presumption. Honest answer is could_not_verify.",
+      "match_keywords": ["kellerman", "pacific coast construction", "887 f.2d"],
+      "expected_verdict": "could_not_verify",
+      "verifiable": false,
+      "sources": ["motion_for_summary_judgment"]
+    },
+    {
+      "id": "gt-8",
+      "type": "misapplied_citation",
+      "summary": "Seabright Ins. Co. v. US Airways, 52 Cal.4th 590 (2011) is cited as authority that OSHA compliance creates a rebuttable presumption of due care in negligence. That stretches the case. Lower-confidence, domain-knowledge call; could_not_verify is acceptable.",
+      "match_keywords": ["seabright", "us airways", "52 cal.4th 590", "osha", "presumption", "due care"],
+      "expected_verdict": "could_not_verify",
+      "verifiable": false,
+      "sources": ["motion_for_summary_judgment"]
+    }
+  ]
+}

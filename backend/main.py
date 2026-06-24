@@ -2,7 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
-app = FastAPI()
+from pipeline import run_pipeline
+
+app = FastAPI(title="BS Detector")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,6 +27,14 @@ def load_documents() -> dict[str, str]:
 
 @app.post("/analyze")
 async def analyze():
+    """Run the multi-agent verification pipeline over the case file."""
     documents = load_documents()
-    # TODO: Build your multi-agent pipeline here
-    return {"report": None}
+    state = run_pipeline(documents)
+    return {
+        "report": {
+            "citations": [c.model_dump() for c in state.citations],
+            "flags": [f.model_dump() for f in state.flags],
+            "judicial_memo": state.judicial_memo,
+            "errors": state.errors,
+        }
+    }
